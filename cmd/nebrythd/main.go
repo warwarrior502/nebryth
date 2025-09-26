@@ -1,80 +1,29 @@
 package main
 
 import (
-	"io"
-	"os"
+    "os"
 
-	dbm "github.com/cometbft/cometbft-db"
-	"github.com/cometbft/cometbft/libs/log"
+    "github.com/cosmos/cosmos-sdk/server"
+    svrcmd "github.com/cosmos/cosmos-sdk/server/cmd"
+    "github.com/cosmos/cosmos-sdk/types/module"
 
-	"github.com/spf13/cobra"
-
-	svrcmd "github.com/cosmos/cosmos-sdk/server/cmd"
-	server "github.com/cosmos/cosmos-sdk/server"
-	servertypes "github.com/cosmos/cosmos-sdk/server/types"
-
-	genutilcli "github.com/cosmos/cosmos-sdk/x/genutil/client/cli"
-	"github.com/cosmos/cosmos-sdk/client/keys"
-
-	authcli "github.com/cosmos/cosmos-sdk/x/auth/client/cli"
-	bankcli "github.com/cosmos/cosmos-sdk/x/bank/client/cli"
-
-	"github.com/nebryth/nebrythd/app"
+    "github.com/warwarrior502/nebryth/app"
 )
 
-func newApp(
-	logger log.Logger,
-	db dbm.DB,
-	traceStore io.Writer,
-	appOpts servertypes.AppOptions,
-) servertypes.Application {
-	return app.NewNebrythApp(logger, db)
-}
-
-func appExport(
-	logger log.Logger,
-	db dbm.DB,
-	traceStore io.Writer,
-	height int64,
-	forZeroHeight bool,
-	jailAllowedAddrs []string,
-	appOpts servertypes.AppOptions,
-	modulesToExport []string,
-) (servertypes.ExportedApp, error) {
-	return servertypes.ExportedApp{}, nil
-}
-
 func main() {
-	rootCmd := &cobra.Command{
-		Use:   "nebrythd",
-		Short: "Nebryth Daemon (Cosmos SDK v0.47.5) — with staking support",
-	}
+    // Create the root command for nebrythd
+    rootCmd, _ := svrcmd.NewRootCmd(
+        app.AppName,
+        app.MakeEncodingConfig,
+        app.NewNebrythApp,
+    )
 
-	// Keys
-	rootCmd.AddCommand(keys.Commands(app.DefaultNodeHome))
+    // Add module init flags (optional, but useful for CLI)
+    module.AddModuleInitFlags(rootCmd)
 
-	// Genesis utilities
-	rootCmd.AddCommand(
-		genutilcli.InitCmd(app.ModuleBasics, app.DefaultNodeHome),
-		genutilcli.GenTxCmd(app.ModuleBasics, app.TxEncodingConfig(), nil, app.DefaultNodeHome),
-		genutilcli.CollectGenTxsCmd(nil, app.DefaultNodeHome, nil),
-		genutilcli.ValidateGenesisCmd(app.ModuleBasics),
-		genutilcli.AddGenesisAccountCmd(app.DefaultNodeHome),
-	)
-
-	// Query commands
-	rootCmd.AddCommand(
-		authcli.GetQueryCmd(),
-		bankcli.GetQueryCmd(),
-	)
-
-	// Server commands
-	rootCmd.AddCommand(
-		server.StartCmd(newApp, app.DefaultNodeHome),
-		server.ExportCmd(appExport, app.DefaultNodeHome),
-	)
-
-	if err := svrcmd.Execute(rootCmd, app.DefaultNodeHome, app.AppName); err != nil {
-		os.Exit(1)
-	}
+    // Execute the command
+    if err := svrcmd.Execute(rootCmd, app.AppName, os.ExpandEnv("$HOME/.nebrythd")); err != nil {
+        os.Exit(1)
+    }
 }
+

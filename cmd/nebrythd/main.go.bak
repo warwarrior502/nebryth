@@ -1,0 +1,59 @@
+package main
+
+import (
+    "os"
+
+    "github.com/spf13/cobra"
+
+    "github.com/cosmos/cosmos-sdk/client"
+    "github.com/cosmos/cosmos-sdk/server"
+    servercfg "github.com/cosmos/cosmos-sdk/server/config"
+    "github.com/cosmos/cosmos-sdk/version"
+
+    "github.com/warwarrior502/nebryth/app"
+)
+
+func rootCommand() (*cobra.Command, *server.Context) {
+    // default client context
+    initClientCtx := client.Context{}.
+        WithCodec(nil).
+        WithLegacyAmino(nil)
+
+    srvCtx := server.NewDefaultContext()
+
+    rootCmd := &cobra.Command{
+        Use:   "nebrythd",
+        Short: "Nebryth Daemon",
+        PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+            // set client context on the command
+            if err := client.SetCmdClientContextHandler(initClientCtx, cmd); err != nil {
+                return err
+            }
+            // initialize server config, logger and viper from flags and config files
+            return server.InterceptConfigsPreRunHandler(cmd)
+        },
+    }
+
+    // add top-level commands provided by the SDK server package
+    cfg := servercfg.DefaultConfig()
+    rootCmd.AddCommand(
+        server.NewStartCmd(app.NewNebrythApp, srvCtx, cfg),
+        server.NewInitCmd(app.NewNebrythApp, srvCtx, cfg),
+        server.NewExportCmd(app.NewNebrythApp, srvCtx, cfg),
+    )
+
+    // add query and tx subcommands
+    rootCmd.AddCommand(server.NewQueryCmd())
+    rootCmd.AddCommand(server.NewTxCmd())
+
+    return rootCmd, srvCtx
+}
+
+func main() {
+    rootCmd, _ := rootCommand()
+
+    if err := rootCmd.Execute(); err != nil {
+        os.Exit(1)
+    }
+}
+

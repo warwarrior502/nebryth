@@ -1,0 +1,207 @@
+package app
+
+import (
+    _ "embed"
+    "io"
+    "os"
+    "path/filepath"
+
+    // Side-effect imports to register module configs and tx config.
+    _ "github.com/cosmos/cosmos-sdk/x/auth/tx/config"
+    "cosmossdk.io/core/appconfig"
+    "cosmossdk.io/depinject"
+    "cosmossdk.io/log"
+    storetypes "cosmossdk.io/store/types"
+
+    dbm "github.com/cosmos/cosmos-db"
+    "github.com/cosmos/cosmos-sdk/baseapp"
+    "github.com/cosmos/cosmos-sdk/client"
+    "github.com/cosmos/cosmos-sdk/codec"
+    codectypes "github.com/cosmos/cosmos-sdk/codec/types"
+    "github.com/cosmos/cosmos-sdk/runtime"
+    "github.com/cosmos/cosmos-sdk/server"
+    "github.com/cosmos/cosmos-sdk/server/api"
+    srvconfig "github.com/cosmos/cosmos-sdk/server/config"
+    servertypes "github.com/cosmos/cosmos-sdk/server/types"
+    "github.com/cosmos/cosmos-sdk/types/module"
+
+    // Core modules (keepers imported for wiring; side-effects register modules).
+    _ "cosmossdk.io/x/auth"                // side-effects
+    authkeeper "cosmossdk.io/x/auth/keeper"
+    _ "cosmossdk.io/x/auth/tx/config"      // side-effects
+    _ "cosmossdk.io/x/bank"                // side-effects
+    bankkeeper "cosmossdk.io/x/bank/keeper"
+    _ "cosmossdk.io/x/consensus"           // side-effects
+    consensuskeeper "cosmossdk.io/x/consensus/keeper"
+    _ "cosmossdk.io/x/distribution"        // side-effects
+    distrkeeper "cosmossdk.io/x/distribution/keeper"
+    "github.com/cosmos/cosmos-sdk/x/genutil"
+    genutiltypes "github.com/cosmos/cosmos-sdk/x/genutil/types"
+    _ "cosmossdk.io/x/mint"                // side-effects
+    _ "cosmossdk.io/x/staking"             // side-effects
+    stakingkeeper "cosmossdk.io/x/staking/keeper"
+
+    authtypes "cosmossdk.io/x/auth/types"
+    upgradetypes "cosmossdk.io/x/upgrade/types"
+)
+
+// DefaultNodeHome is the daemon home directory.
+var DefaultNodeHome string
+
+//go:embed app.yaml
+var AppConfigYAML []byte
+
+// NebrythApp implements runtime.AppI and servertypes.Application.
+type NebrythApp struct {
+    *runtime.App
+
+    // Keepers you may need to access explicitly
+    AccountKeeper   authkeeper.AccountKeeper
+    BankKeeper      bankkeeper.BaseKeeper
+    StakingKeeper   *stakingkeeper.Keeper
+    Distribution    distrkeeper.Keeper
+    ConsensusKeeper consensuskeeper.Keeper
+}
+
+// Ensure interfaces are satisfied.
+var (
+    _ runtime.AppI            = (*NebrythApp)(nil)
+    _ servertypes.Application = (*NebrythApp)(nil)
+)
+
+// NewNebrythApp creates and configures the Nebryth application.
+func NewNebrythApp(
+    logger log.Logger,
+    db dbm.DB,
+    traceStore io.Writer,
+    loadLatest bool,
+    appOpts servertypes.AppOptions,
+) *NebrythApp {
+    // Determine node home to locate app.yaml (if you want to read from disk).
+    home := appOpts.Get(server.FlagHome).(string)
+    if home == "" {
+        home = DefaultNodeHome
+    }
+    DefaultNodeHome = home
+
+    // Build the app via depinject using the embedded app.yaml.
+    var (
+        app        = &NebrythApp{}
+        appBuilder *runtime.AppBuilder
+
+        // Codec and registry
+        cdc      codec.Codec
+        txCfg    client.TxConfig
+        registry codectypes.InterfaceRegistry
+
+        // Stores and keys
+        storeKey storetypes.StoreKey
+
+        // Keepers populated by depinject based on app.yaml
+        accountKeeper   authkeeper.AccountKeeper
+        bankKeeper      bankkeeper.BaseKeeper
+        stakingKeeper   *stakingkeeper.Keeper
+        distrKeeper     distrkeeper.Keeper
+        consKeeper      consensuskeeper.Keeper
+    )
+
+    if err := appconfig.LoadYAML(AppConfigYAML, &appConfig()); err != nil {
+        panic(err)
+    }
+
+    depinject.Inject(
+        appconfig.WrapAppConfig(&appConfig()),
+        &appBuilder,
+        &cdc,
+        &txCfg,
+        &registry,
+        &storeKey,
+
+        // Inject keepers
+        &accountKeeper,
+        &bankKeeper,
+        &stakingKeeper,
+        &distrKeeper,
+        &consKeeper,
+    )
+
+    // Build BaseApp with provided components.
+    base := appBuilder.Build(
+        logger,
+        db,
+        traceStore,
+        txCfg,
+        appOpts,
+    )
+
+    app.App = base
+    app.AccountKeeper = accountKeeper
+    app.BankKeeper = bankKeeper
+    app.StakingKeeper = stakingKeeper
+    app.Distribution = distrKeeper
+    app.ConsensusKeeper = consKeeper
+
+    // REQUIRED in v0.50: set auth pre-blocker (and upgrade if you use x/upgrade).
+    // This ensures pre-block validations and handlers run correctly.
+    app.ModuleManager.SetOrderPreBlockers(
+        upgradetypes.ModuleName, // include if you have x/upgrade configured
+        authtypes.ModuleName,    // required
+    )
+
+    // Keep your existing module orders (examples shown; adjust to your modules).
+    app.ModuleManager.SetOrderBeginBlockers(
+        genutiltypes.ModuleName,
+        authtypes.ModuleName,
+    )
+    app.ModuleManager.SetOrderEndBlockers(
+        genutiltypes.ModuleName,
+    )
+    app.ModuleManager.SetOrderInitGenesis(
+        genutiltypes.ModuleName,
+        authtypes.ModuleName,
+    )
+    app.ModuleManager.SetOrderExportGenesis(
+        genutiltypes.ModuleName,
+        authtypes.ModuleName,
+    )
+
+    // Register API routes and services.
+    app.configureAPIServer()
+
+    // Load latest state if requested.
+    if loadLatest {
+        if err := app.LoadLatestVersion(); err != nil {
+            panic(err)
+        }
+    }
+
+    return app
+}
+
+// configureAPIServer wires gRPC-gateway and REST API routes.
+func (app *NebrythApp) configureAPIServer() {
+    cfg := srvconfig.Config{API: srvconfig.APIConfig{Enable: true}}
+    appOpts := server.EmptyAppOptions{}
+    apiSrv := api.New(*app.App, cfg, appOpts)
+    apiSrv.RegisterGRPCGatewayRoutes()
+    apiSrv.Start()
+}
+
+// appConfig returns the DI app configuration descriptor.
+// Adjust modules and options here based on your needs.
+func appConfig() appconfig.AppConfig {
+    return appconfig.AppConfig{
+        // Runtime module configuration goes here. This is a minimal skeleton.
+        // You can keep this empty if using default module registrations via side-effects.
+    }
+}
+
+// InitChainer sets up genesis via x/genutil.
+func (app *NebrythApp) InitChainer(ctx client.Context, req servertypes.RequestInitChain) servertypes.ResponseInitChain {
+    return genutil.InitGenesis(ctx, app.App, req)
+}
+
+// ExportAppStateAndValidators exports the state for zero-height and validators.
+func (app *NebrythApp) ExportAppStateAndValidators(forZeroHeight bool, jailAllowedAddrs []string) (servertypes.ExportedApp, error) {
+    return app.App.ExportAppStateAndValidators(forZeroHeight, jailAllowedAddrs)
+}

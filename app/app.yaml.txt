@@ -1,0 +1,8 @@
+modules: |
+  # Minimal modules list to register keepers used above.
+  - name: auth
+  - name: bank
+  - name: staking
+  - name: distribution
+  - name: genutil
+  - name: mint
